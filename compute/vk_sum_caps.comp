@@ -1,0 +1,72 @@
+#version 460
+
+layout(local_size_x = 1, local_size_y = 64, local_size_z = 1) in;
+
+layout(constant_id = 0) const uint algorithm  = 0;
+layout(constant_id = 1) const uint workload   = 0;
+layout(constant_id = 2) const uint iterations = 1;
+layout(constant_id = 3) const uint n_points	  = 1;
+layout(constant_id = 4) const uint n_caps     = 1;
+
+layout(push_constant) uniform PushBuffer
+{
+	uint offset;
+};
+
+layout(binding = 3) restrict readonly buffer C
+{
+	vec4 cap_vol[];
+};
+
+layout(binding = 4) restrict buffer S 
+{
+	vec4 sum[];
+};
+
+layout(binding = 5) restrict buffer D 
+{
+	vec4 d2[];
+};
+
+void main()
+{
+	uint index     = gl_GlobalInvocationID.x;
+	uint index_cap = gl_GlobalInvocationID.y;
+	if(index >= 1) return;
+	if(index_cap >= offset) return;
+	if(2*offset == n_caps)
+	{
+		float norm = 1. / n_points;
+		vec4 c = sum[index_cap          * n_points] * norm;
+		vec4 d = sum[(index_cap+offset) * n_points] * norm;
+
+		vec4 e = cap_vol[index_cap];
+		vec4 f = cap_vol[index_cap+offset];
+
+		vec4 d2c = c-e; 
+		vec4 d2d = d-f; 
+		d2[index_cap] = d2c*d2c;
+		d2[index_cap+offset] = d2d*d2d;
+
+		sum[index_cap] = c;
+		sum[index_cap+offset] = d;
+	}
+		
+	d2[index_cap] = d2[index_cap] + d2[index_cap + offset];
+
+	if(offset == 64)
+	{
+		memoryBarrierShared(); barrier();
+		if(index_cap < 32) d2[index_cap] = d2[index_cap] + d2[index_cap + 32];
+		memoryBarrierShared(); barrier();
+		if(index_cap < 16) d2[index_cap] = d2[index_cap] + d2[index_cap + 16];
+		memoryBarrierShared(); barrier();
+		if(index_cap <  8) d2[index_cap] = d2[index_cap] + d2[index_cap + 8];
+		memoryBarrierShared(); barrier();
+		if(index_cap <  4) d2[index_cap] = d2[index_cap] + d2[index_cap + 4];
+		memoryBarrierShared(); barrier();
+		if(index_cap <  2) d2[index_cap] = d2[index_cap] + d2[index_cap + 2];
+		memoryBarrierShared(); barrier();
+		if(index_cap <  1) d2[index_cap] = d2[index_cap] + d2[index_cap + 1];
+	}	
+}

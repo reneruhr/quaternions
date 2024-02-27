@@ -1,0 +1,54 @@
+#version 460
+
+layout(local_size_x = 512, local_size_y = 1, local_size_z = 1) in;
+
+layout(constant_id = 0) const uint algorithm  = 0;
+layout(constant_id = 1) const uint workload   = 0;
+layout(constant_id = 2) const uint iterations = 1;
+layout(constant_id = 3) const uint n_points	  = 1;
+layout(constant_id = 4) const uint n_caps     = 1;
+
+layout(push_constant) uniform PushBuffer
+{
+	uint offset;
+};
+
+layout(binding = 4) restrict buffer S
+{
+	vec4 sum_in_cap[];
+};
+
+
+void main()
+{
+	uint index		= gl_GlobalInvocationID.x;
+	uint index_cap  = gl_GlobalInvocationID.y;
+	if(index >= offset) return;
+	if(index_cap >= n_caps) return;
+
+	uint i = index + index_cap * n_points;
+
+	sum_in_cap[i] =   sum_in_cap[i] + sum_in_cap[i+offset];
+
+	if(offset == 512)
+	{
+		memoryBarrierShared(); barrier();
+		if(index < 256) sum_in_cap[i] = sum_in_cap[i] + sum_in_cap[i + 256];
+		memoryBarrierShared(); barrier();
+		if(index < 128) sum_in_cap[i] = sum_in_cap[i] + sum_in_cap[i + 128];
+		memoryBarrierShared(); barrier();
+		if(index <  64) sum_in_cap[i] = sum_in_cap[i] + sum_in_cap[i + 64];
+		memoryBarrierShared(); barrier();
+		if(index <  32) sum_in_cap[i] = sum_in_cap[i] + sum_in_cap[i + 32];
+		memoryBarrierShared(); barrier();
+		if(index <  16) sum_in_cap[i] = sum_in_cap[i] + sum_in_cap[i + 16];
+		memoryBarrierShared(); barrier();
+		if(index <   8) sum_in_cap[i] = sum_in_cap[i] + sum_in_cap[i + 8];
+		memoryBarrierShared(); barrier();
+		if(index <   4) sum_in_cap[i] = sum_in_cap[i] + sum_in_cap[i + 4];
+		memoryBarrierShared(); barrier();
+		if(index <   2) sum_in_cap[i] = sum_in_cap[i] + sum_in_cap[i + 2];
+		memoryBarrierShared(); barrier();
+		if(index <   1) sum_in_cap[i] = sum_in_cap[i] + sum_in_cap[i + 1];
+	}	
+}

@@ -1,0 +1,29 @@
+#version 460
+
+layout(local_size_x = N_LOCAL_SIZE_X, local_size_y = N_LOCAL_SIZE_Y, local_size_z = N_LOCAL_SIZE_Z) in;
+
+layout(std140, binding = 10) uniform U0
+{
+	uint n_points;
+	uint n_caps;
+	uint offset;
+	uint iterations;
+	uint frame;
+	uint padding[3];
+};
+
+layout(binding = 6) restrict buffer S
+{
+	vec4 sum_in_cap[];
+};
+
+
+void main()
+{
+	uint index		= gl_GlobalInvocationID.x;
+	uint index_cap  = gl_GlobalInvocationID.y;
+	if(index >= offset) return;
+	if(index_cap >= n_caps) return;
+
+	sum_in_cap[index + index_cap * n_points ] =   sum_in_cap[ index + index_cap * n_points] + sum_in_cap[ index + offset + index_cap * n_points];
+}

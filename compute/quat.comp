@@ -1,0 +1,311 @@
+#version 460
+
+layout(local_size_x = N_LOCAL_SIZE_X, local_size_y = N_LOCAL_SIZE_Y, local_size_z = N_LOCAL_SIZE_Z) in;
+
+layout(std430, binding = 0) restrict buffer Quaternions 
+{
+	vec4 quats[];
+};
+
+layout(std430, binding = 3) restrict writeonly buffer C
+{
+	vec4 cap_vol[];
+};
+
+layout(std430, binding = 4) restrict buffer S
+{
+	vec4 sum_in_cap[];
+};
+
+layout(std140, binding = 10) uniform U0
+{
+	uint n_points;
+	uint n_caps;
+	uint offset;
+	uint iterations;
+	uint frame;
+	uint padding[3];
+};
+
+const uint shared_size = N_LOCAL_SIZE_X * N_LOCAL_SIZE_Y;
+shared vec4 tree_root[shared_size];
+shared uint last[shared_size];
+
+// https://www.pcg-random.org/
+uint pcg(uint v)
+{
+	uint state = v * 747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
+// http://www.jcgt.org/published/0009/03/02/
+uvec3 pcg3d(uvec3 v) 
+{
+    v = v * 1664525u + 1013904223u;
+
+    v.x += v.y*v.z;
+    v.y += v.z*v.x;
+    v.z += v.x*v.y;
+
+    v ^= v >> 16u;
+
+    v.x += v.y*v.z;
+    v.y += v.z*v.x;
+    v.z += v.x*v.y;
+
+    return v;
+}
+
+// http://www.jcgt.org/published/0009/03/02/
+uvec4 pcg4d(uvec4 v)
+{
+    v = v * 1664525u + 1013904223u;
+    
+    v.x += v.y*v.w;
+    v.y += v.z*v.x;
+    v.z += v.x*v.y;
+    v.w += v.y*v.z;
+    
+    v ^= v >> 16u;
+    
+    v.x += v.y*v.w;
+    v.y += v.z*v.x;
+    v.z += v.x*v.y;
+    v.w += v.y*v.z;
+    
+    return v;
+}
+
+#define pi      3.1415926f
+#define tau     6.2831853f
+#define uint_max_inv 2.3283068e-10
+#define s5inv   0.4472135f
+#define s5inv2  0.8944271f
+
+
+//Marsaglia
+vec4 polar_1(inout uint a)
+{
+	a = pcg(a);
+	float phi = tau*uint_max_inv*a;
+	a = pcg(a);
+	float the = tau*uint_max_inv*a;
+
+	a = pcg(a);
+	float z = uint_max_inv*a;
+	float r = sqrt(z);
+	float t = sqrt(1.f-z);
+	return vec4(r*cos(phi), r*sin(phi), t*cos(the), t*sin(the));
+}
+
+vec4 polar_2(inout uvec3 x)
+{
+	x = pcg3d(x);
+
+	vec3 v = uint_max_inv * vec3(x);
+
+	float phi = tau*v.x;
+	float the = tau*v.y;
+	float z = v.z;
+	float r = sqrt(z);
+	float t = sqrt(1.f-z);
+
+	return vec4(r*cos(phi), r*sin(phi), t*cos(the), t*sin(the));
+}
+
+vec4 quat_mul(vec4 a, vec4 b)
+{
+	return vec4(a.x       * b.x       - dot  (a.yzw, b.yzw) , 
+				a.x*b.yzw + b.x*a.yzw + cross(a.yzw, b.yzw));
+}
+
+vec4 construct_ts(uint u)
+{
+	u = u & 7;
+	float r = s5inv - (u&1u)*s5inv2;
+	u >>=1;
+	float x = u==0 ? s5inv2 : 0;
+	float y = u==1 ? s5inv2 : 0;
+	float z = u>=2 ? s5inv2 : 0;
+	return vec4(r, x , y, z);
+}
+
+vec4 walk_6(vec4 q, inout uint a)
+{
+	a = pcg(a);
+
+	vec4 p = construct_ts(a);
+
+	q = quat_mul(p, q);
+	q = normalize(q);
+	return q;
+}
+
+//const float dphi   = pi * (3.f - sqrt(5.f));
+//const float dtheta = pi * 0.683375209645f;
+// Alexa
+const float dphi = tau / 1.4142135623730951;
+const float dtheta = tau / 1.533751168755204288118041;
+
+vec4 spherical_fibonacci_0(uint n, uint index)
+{
+	float phi  = index*dphi;
+	float theta = index*dtheta;
+	phi	  = mod(phi, tau);
+	theta = mod(theta, tau);
+
+	float z = (float(index)+0.5f)/n;
+
+	float r    =   sqrt(max(0.f,z));
+	float t    =   sqrt(max(0.f,1.f-z));
+	float sin_phi   = sin(phi);
+	float cos_phi   = cos(phi);
+	float sin_theta = sin(theta);
+	float cos_theta = cos(theta);
+	return vec4( r*sin_phi , r*cos_phi, t*sin_theta, t*cos_theta);
+}
+
+vec4 rejection_0(inout uvec4 x)
+{
+    x = pcg4d(x);
+	vec4 v = 2*uint_max_inv * vec4(x)-1;
+	return normalize(v);
+}
+
+const float vol_S4_inv =  1.f / (2.f*pi*pi);
+void make_cap(out mat4 cap_mat, out vec4 h_cap, uint index, uint index_cap)
+{
+	uvec4 seed = uvec4(index_cap) + n_caps * uvec4(0, 2, 3, 5);
+	seed = pcg4d(seed);
+
+	vec4 theta = pi*uint_max_inv * vec4(seed);
+	h_cap= 1.f - cos(theta);
+
+	cap_mat = mat4(
+						spherical_fibonacci_0( n_caps * 4,     index_cap * 4),
+						spherical_fibonacci_0( n_caps * 4, 1 + index_cap * 4),
+						spherical_fibonacci_0( n_caps * 4, 2 + index_cap * 4),
+						spherical_fibonacci_0( n_caps * 4, 3 + index_cap * 4)
+						);
+	if(index == 0)
+		cap_vol[index_cap] = vol_S4_inv * pi * (2.f*theta-sin(2.f*theta)) ;
+}
+
+const vec4 S5f[6] = 
+{
+	vec4(s5inv, s5inv2,0,0),
+	vec4(s5inv,0, s5inv2,0),
+	vec4(s5inv,0,0, s5inv2),
+	vec4(s5inv,-s5inv2,0,0),
+	vec4(s5inv,0,-s5inv2,0),
+	vec4(s5inv,0,0,-s5inv2),
+}; 
+
+vec4 integrate(mat4 cap_mat, vec4 h_cap, uint index, uvec4 seed)
+{
+	vec4 sum = vec4(0);
+
+	vec4 q; 
+
+	if(algorithm==17 || algorithm==18 || algorithm==19)
+	{
+		uint id = gl_LocalInvocationIndex;
+
+		uint id5 = id/5;
+		uint id25 = id5/5;
+		uint id125 = id25/5;
+
+		tree_root[id] =  id < 750 ? vec4(1,0,0,0) : S5f[0];
+		uint cur = id125;
+		tree_root[id] = quat_mul( S5f[ cur % 6] , tree_root[id]);
+		memoryBarrierShared(); barrier();
+
+		cur = cur+ 4 + id25 % 5;
+		tree_root[id] = quat_mul( S5f[ cur % 6] , tree_root[id]);
+		memoryBarrierShared(); barrier();
+
+		cur = cur + 4 + id5 % 5;
+		tree_root[id] = quat_mul( S5f[ cur % 6] , tree_root[id]);
+		memoryBarrierShared(); barrier();
+
+		cur = cur + 4 + id % 5;
+		tree_root[id] = quat_mul( S5f[ cur % 6] , tree_root[id]);
+		memoryBarrierShared(); barrier();
+
+		seed = pcg4d(seed);
+		q = quat_mul(tree_root[seed.w & shared_size-1], quat_mul(tree_root[seed.z & shared_size-1], quat_mul( tree_root[ seed.y  & shared_size-1], tree_root[seed.x & shared_size-1])));
+	}
+
+
+
+	for(uint i=0; i < iterations; i++)
+	{
+		switch(algorithm)
+		{
+			case 1: 
+			{
+				q = polar_1(seed.x);
+				break;
+			} 
+			case 2: 
+			{
+				q = polar_2(seed.xyz);
+				break;
+			} 
+			case 18:
+			{
+				q = quat_mul( tree_root[i & shared_size-1], q);
+				break;
+			} 
+			case 19:
+			{
+				seed.x = pcg(seed.x);
+				q = quat_mul( tree_root[seed.x & shared_size-1], q);
+				break;
+			} 
+			case 20:
+			{
+				q = spherical_fibonacci_0(iterations*n_points, index*iterations+i);
+				break;
+			}
+			case 30:
+			{
+				q = rejection_0(seed);
+				break;	
+			}
+		}
+
+		vec4 h_quat = 1.f - q*cap_mat;
+		vec4 dirac  = vec4(lessThanEqual(h_quat, h_cap));
+		sum += dirac;
+	}
+	return sum;
+}
+
+void main()
+{
+	uint index		= gl_GlobalInvocationID.x;
+	uint index_cap  = gl_GlobalInvocationID.y;
+
+	if(index >= n_points) return;
+	if(index_cap >= n_caps) return;
+
+	uvec4 seed = (frame+1) * (uvec4(index)+n_points*uvec4(0, 1, 2, 3));
+	
+	vec4 q = vec4(0);
+
+	switch(workload)
+	{
+		case 2:
+		{
+			mat4 cap_mat;
+			vec4 h_cap;
+			make_cap(cap_mat, h_cap, index, index_cap);
+			
+			sum_in_cap[index + index_cap * n_points] = integrate(cap_mat, h_cap, index, seed)/iterations;
+
+			break;
+		}
+	}
+}

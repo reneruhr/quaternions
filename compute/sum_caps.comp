@@ -1,0 +1,58 @@
+#version 460
+
+layout(local_size_x = N_LOCAL_SIZE_X, local_size_y = N_LOCAL_SIZE_Y, local_size_z = N_LOCAL_SIZE_Z) in;
+
+layout(std140, binding = 10) uniform U0
+{
+	uint n_points;
+	uint n_caps;
+	uint offset;
+	uint iterations;
+	uint frame;
+	uint padding[3];
+};
+
+
+layout(binding = 3) restrict readonly buffer C
+{
+	vec4 cap_vol[];
+};
+
+layout(binding = 6) restrict buffer S 
+{
+	vec4 sum[];
+};
+
+layout(binding = 5) restrict buffer D 
+{
+	vec4 d2[];
+};
+
+
+void main()
+{
+	uint index     = gl_GlobalInvocationID.x;
+	uint index_cap = gl_GlobalInvocationID.y;
+	if(index >= 1) return;
+	if(index_cap >= offset) return;
+	if(2*offset == n_caps)
+	{
+		float norm = 1. / n_points;
+		vec4 c = sum[index_cap          * n_points] * norm;
+		vec4 d = sum[(index_cap+offset) * n_points] * norm;
+
+		vec4 e = cap_vol[index_cap];
+		vec4 f = cap_vol[index_cap+offset];
+
+		vec4 d2c = c-e; 
+		vec4 d2d = d-f; 
+		d2[index_cap] = d2c*d2c;
+		d2[index_cap+offset] = d2d*d2d;
+
+		sum[index_cap] = c;
+		sum[index_cap+offset] = d;
+	}
+		
+	d2[index_cap] = d2[index_cap] + d2[index_cap + offset];
+
+}
