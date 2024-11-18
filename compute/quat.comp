@@ -207,6 +207,7 @@ vec4 integrate(mat4 cap_mat, vec4 h_cap, uint index, uvec4 seed)
 	vec4 sum = vec4(0);
 
 	vec4 q; 
+	vec4 q_init; 
 
 	if(algorithm==17 || algorithm==18 || algorithm==19)
 	{
@@ -237,7 +238,7 @@ vec4 integrate(mat4 cap_mat, vec4 h_cap, uint index, uvec4 seed)
 		q = quat_mul(tree_root[seed.w & shared_size-1], quat_mul(tree_root[seed.z & shared_size-1], quat_mul( tree_root[ seed.y  & shared_size-1], tree_root[seed.x & shared_size-1])));
 	}
 
-
+    q_init = q   
 
 	for(uint i=0; i < iterations; i++)
 	{
@@ -255,7 +256,7 @@ vec4 integrate(mat4 cap_mat, vec4 h_cap, uint index, uvec4 seed)
 			} 
 			case 18:
 			{
-				q = quat_mul( tree_root[i & shared_size-1], q);
+				q = quat_mul( tree_root[i & shared_size-1], q_init);
 				break;
 			} 
 			case 19:
